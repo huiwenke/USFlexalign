@@ -17,6 +17,8 @@
    2026/08/14: A C/C++ code of US-Flexalign was constructed by Y Zhu
                and C Zhang
    2026/08/26: color different regions by different colors in -o
+   2026/09/08: fix bug in secondary structure-based initial alignment in 
+               flexible structure alignment. use .spt for -rasmol output
 ===============================================================================
 
 =============================
