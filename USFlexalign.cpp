@@ -10,7 +10,7 @@ void print_version()
     cout << 
 "\n"
 " ********************************************************************\n"
-" * US-Flexalign (Version 20260908)                                  *\n"
+" * US-Flexalign (Version 20261019)                                  *\n"
 " * Flexible Structure Alignment of Proteins and Nucleic Acids       *\n"
 " * Reference: Y Zhu, S Yan, Y Zhang, C Zhang (2026)                 *\n"
 " * Please email comments and suggestions to cx.zhang2@siat.ac.cn    *\n"
@@ -146,13 +146,21 @@ void print_help(bool h_opt = false)
 {
     print_version();
     cout << "\n"
-            "Usage: USalignFlex PDB1.pdb PDB2.pdb [Options]\n"
+            "Usage: USFlexalign PDB1.pdb PDB2.pdb [Options]\n"
             "\n"
             "Options:\n"
             "  -hinge  Maximum number of hinge allowed in flexible alignment.\n"
             "          default: 9\n"
             "\n"
+            " -byresi  Residue correspondence used in flexible alignment.\n"
+            "          0: (default) structure-based alignment.\n"
+            "          1: fixed correspondence by residue index.\n"
+            "          5: fixed correspondence from glocal sequence alignment.\n"
+            "          -TMscore and -tmscore are aliases for -byresi.\n"
+            "          -seq is equivalent to -byresi 5.\n"
+            "\n"
             "    -afp  Enable AFP-enhancement mechanism.\n"
+            "          Cannot be used with -byresi 1 or 5.\n"
             "\n"
             " -TMpass  Early stopping threshold for AFP-enhancement mechanism.\n"
             "          default: 0.85\n"
@@ -160,7 +168,7 @@ void print_help(bool h_opt = false)
             "      -h  Print the full help message, including additional options\n"
             "\n"
             "Example usages ('gunzip' program is needed to read .gz compressed files):\n"
-            "    USalignFlex 1oid.pdb 2wde.pdb\n"
+            "    USFlexalign 1oid.pdb 2wde.pdb\n"
          << endl;
 
     if (h_opt)
@@ -260,8 +268,32 @@ int flexalign_unified(string &xname, string &yname, const string &fname_super,
                     read_PDB(PDB_lines2[chain_j], ya, seqy, resi_vec2, read_resi);
                     (mol_vec2[chain_j] > 0) ? make_sec(seqy, ya, ylen, secy, atom_opt) : make_sec(ya, ylen, secy);
 
-                    if (byresi_opt)
+                    if (byresi_opt == 5)
+                    {
+                        // Compute the full-chain glocal alignment once; all
+                        // residual fragments must reuse these fixed pairs.
+                        sequence.assign(2, "");
+                        NWalign_main(seqx, seqy, xlen, ylen, sequence[0], sequence[1],
+                            mol_vec1[chain_i] + mol_vec2[chain_j], NULL, 0, 2);
+                    }
+                    else if (byresi_opt)
                         extract_aln_from_resi(sequence, seqx, seqy, resi_vec1, resi_vec2, byresi_opt);
+
+                    if (byresi_opt)
+                    {
+                        vector<int> fixed_invmap;
+                        if (!flexalign_fixed_invmap(sequence, xlen, ylen, fixed_invmap))
+                        {
+                            cerr << "Warning! No fixed residue pairs between "
+                                 << xname << chainID_list1[chain_i] << " and "
+                                 << yname << chainID_list2[chain_j] << endl;
+                            DeleteArray(&ya, ylen);
+                            delete[] seqy;
+                            delete[] secy;
+                            resi_vec2.clear();
+                            continue;
+                        }
+                    }
 
                     // --- CORE DISPATCH LOGIC START ---
                     if (mode == FLEX_USBCAT)
@@ -441,7 +473,7 @@ int main(int argc, char *argv[])
     int mirror_opt = 0;         // do not align mirror
     int het_opt = 0;            // do not read HETATM residues
     int mm_opt = 0;             // do not perform MM-align
-    bool usbcat_opt = false;    // flag for -afp, only valid with -mm 7
+    bool usbcat_opt = false;    // flag for -afp
     string atom_opt = "auto";   // use C alpha atom for protein and C3' for RNA
     string mol_opt = "auto";    // auto-detect the molecule type as protein/RNA
     string suffix_opt = "";     // set -suffix to empty
@@ -708,6 +740,19 @@ int main(int argc, char *argv[])
             if (het_opt != 0 && het_opt != 1 && het_opt != 2)
                 PrintErrorAndQuit("-het must be 0, 1, or 2");
         }
+        else if (!strcmp(argv[i], "-byresi") ||
+                 !strcmp(argv[i], "-tmscore") ||
+                 !strcmp(argv[i], "-TMscore"))
+        {
+            if (i >= (argc - 1))
+                PrintErrorAndQuit("ERROR! Missing value for -byresi");
+            byresi_opt = atoi(argv[i + 1]);
+            i++;
+        }
+        else if (!strcmp(argv[i], "-seq"))
+        {
+            byresi_opt = 5;
+        }
         else if (!strcmp(argv[i], "-afp"))
         {
             usbcat_opt = true;
@@ -791,6 +836,12 @@ int main(int argc, char *argv[])
         PrintErrorAndQuit("Wrong value for option -d! It should be >0");
     if (outfmt_opt >= 2 && (a_opt || u_opt || d_opt))
         PrintErrorAndQuit("-outfmt 2 cannot be used with -a, -u, -L, -d");
+    if (byresi_opt != 0 && byresi_opt != 1 && byresi_opt != 5)
+        PrintErrorAndQuit("ERROR! -byresi can only be 0, 1 or 5 in USFlexalign");
+    if (usbcat_opt && byresi_opt)
+        PrintErrorAndQuit("ERROR! -afp cannot be used with -byresi 1 or 5");
+    if (byresi_opt && i_opt)
+        PrintErrorAndQuit("-byresi 1 or 5 cannot be used with -i or -I");
     if (split_opt < 0)
             split_opt = 2;
     else if (split_opt > 2)
@@ -816,6 +867,8 @@ int main(int argc, char *argv[])
     /* read initial alignment file from 'align.txt' */
     if (i_opt)
         read_user_alignment(sequence, fname_lign, i_opt);
+    if (byresi_opt)
+        i_opt = 3;
 
     if (m_opt && fname_matrix == "") // Output rotation matrix: matrix.txt
         PrintErrorAndQuit("ERROR! Please provide a file name for option -m!");

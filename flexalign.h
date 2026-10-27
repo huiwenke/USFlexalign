@@ -52,6 +52,28 @@ void aln2invmap(const string &seqxA, const string &seqyA, int *invmap)
     }
 }
 
+// Decode the original alignment; residual subsets must retain these pairs.
+int flexalign_fixed_invmap(const vector<string> &sequence,
+    const int xlen, const int ylen, vector<int> &invmap)
+{
+    invmap.assign(ylen + 1, -1);
+    if (sequence.size() < 2) return 0;
+    int i = -1, j = -1, pairs = 0;
+    const int length = min(sequence[0].size(), sequence[1].size());
+    for (int r = 0; r < length; r++)
+    {
+        i += sequence[0][r] != '-';
+        j += sequence[1][r] != '-';
+        if (i >= xlen || j >= ylen) break;
+        if (sequence[0][r] != '-' && sequence[1][r] != '-')
+        {
+            invmap[j] = i;
+            pairs++;
+        }
+    }
+    return pairs;
+}
+
 int flexalign_main(double **xa, double **ya,
                    const char *seqx, const char *seqy, const char *secx, const char *secy,
                    double t0[3], double u0[3][3], vector<vector<double> > &tu_vec,
@@ -67,6 +89,13 @@ int flexalign_main(double **xa, double **ya,
                    const bool u_opt, const bool d_opt, const bool fast_opt,
                    const int mol_type, const int hinge_opt, const int ss_opt)
 {
+    vector<int> fixed_invmap;
+    const int *fixed_map = NULL;
+    if (i_opt == 3)
+    {
+        flexalign_fixed_invmap(sequence, xlen, ylen, fixed_invmap);
+        fixed_map = &fixed_invmap[0];
+    }
     vector<double> tu_tmp(12, 0);
     int round2 = tu_vec.size();
     if (round2 == 0)
@@ -98,9 +127,9 @@ int flexalign_main(double **xa, double **ya,
     se_main(xt, ya, seqx, seqy, TM1, TM2, TM3, TM4, TM5, d0_0, TM_0,
             d0A, d0B, d0u, d0a, d0_out, seqM, seqxA, seqyA, do_vec,
             rmsd0, L_ali, Liden, TM_ali, rmsd_ali, n_ali, n_ali8,
-            xlen, ylen, sequence, Lnorm_ass, d0_scale, i_opt,
-            a_opt, u_opt, d_opt, mol_type, 0, invmap, 1);
-    if (round2)
+            xlen, ylen, sequence, Lnorm_ass, d0_scale, fixed_map ? 0 : i_opt,
+            a_opt, u_opt, d_opt, mol_type, 0, invmap, 1, fixed_map);
+    if (round2 && !fixed_map)
     {
         /* aligned structure A vs unaligned structure B */
         int xlen_h = n_ali8;
@@ -284,6 +313,15 @@ int flexalign_main(double **xa, double **ya,
             break;
         int xlen_h = xlen - n_ali8;
         int ylen_h = ylen - n_ali8;
+        if (fixed_map)
+        {
+            // Only unmatched original pairs can seed another rigid transform.
+            xlen_h = 0;
+            for (j = 0; j < ylen; j++)
+                xlen_h += fixed_map[j] >= 0 && invmap[j] < 0;
+            ylen_h = xlen_h;
+            if (xlen_h < 5) break;
+        }
         char *seqx_h = new char[xlen_h + 1];
         char *seqy_h = new char[ylen_h + 1];
         char *secx_h = new char[xlen_h + 1];
@@ -296,32 +334,60 @@ int flexalign_main(double **xa, double **ya,
         vector<int> r1toi(xlen_h, 0);
         vector<int> r2toj(ylen_h, 0);
 
-        int r1, r2;
-        i = j = -1;
-        r1 = r2 = 0;
-        for (r = 0; r < seqxA.size(); r++)
+        vector<string> sequence_h = sequence;
+        if (fixed_map)
         {
-            i += (seqxA[r] != '-');
-            j += (seqyA[r] != '-');
-            if (seqyA[r] == '-')
+            sequence_h.assign(2, "");
+            int k = 0;
+            for (j = 0; j < ylen; j++)
             {
-                seqx_h[r1] = seqx[i];
-                secx_h[r1] = secx[i];
-                xa_h[r1][0] = xa[i][0];
-                xa_h[r1][1] = xa[i][1];
-                xa_h[r1][2] = xa[i][2];
-                r1toi[r1] = i;
-                r1++;
+                i = fixed_map[j];
+                if (i < 0 || invmap[j] >= 0) continue;
+                seqx_h[k] = seqx[i];
+                seqy_h[k] = seqy[j];
+                secx_h[k] = secx[i];
+                secy_h[k] = secy[j];
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    xa_h[k][axis] = xa[i][axis];
+                    ya_h[k][axis] = ya[j][axis];
+                }
+                r1toi[k] = i;
+                r2toj[k] = j;
+                sequence_h[0] += seqx[i];
+                sequence_h[1] += seqy[j];
+                k++;
             }
-            if (seqxA[r] == '-')
+        }
+        else
+        {
+            int r1, r2;
+            i = j = -1;
+            r1 = r2 = 0;
+            for (r = 0; r < seqxA.size(); r++)
             {
-                seqy_h[r2] = seqy[j];
-                secy_h[r2] = secy[j];
-                ya_h[r2][0] = ya[j][0];
-                ya_h[r2][1] = ya[j][1];
-                ya_h[r2][2] = ya[j][2];
-                r2toj[r2] = j;
-                r2++;
+                i += (seqxA[r] != '-');
+                j += (seqyA[r] != '-');
+                if (seqyA[r] == '-')
+                {
+                    seqx_h[r1] = seqx[i];
+                    secx_h[r1] = secx[i];
+                    xa_h[r1][0] = xa[i][0];
+                    xa_h[r1][1] = xa[i][1];
+                    xa_h[r1][2] = xa[i][2];
+                    r1toi[r1] = i;
+                    r1++;
+                }
+                if (seqxA[r] == '-')
+                {
+                    seqy_h[r2] = seqy[j];
+                    secy_h[r2] = secy[j];
+                    ya_h[r2][0] = ya[j][0];
+                    ya_h[r2][1] = ya[j][1];
+                    ya_h[r2][2] = ya[j][2];
+                    r2toj[r2] = j;
+                    r2++;
+                }
             }
         }
 
@@ -342,7 +408,7 @@ int flexalign_main(double **xa, double **ya,
                      TM1_h, TM2_h, TM3_h, TM4_h, TM5_h, d0_0_h, TM_0_h, d0A_h, d0B_h,
                      d0u_h, d0a_h, d0_out_h, seqM_h, seqxA_h, seqyA_h, do_vec,
                      rmsd0_h, L_ali_h, Liden_h, TM_ali_h, rmsd_ali_h, n_ali_h, n_ali8_h,
-                     xlen_h, ylen_h, sequence, Lnorm_ass,
+                     xlen_h, ylen_h, sequence_h, Lnorm_ass,
                      d0_scale, i_opt, a_opt, u_opt, d_opt, fast_opt, mol_type, -1, ss_opt);
 
         do_rotation(xa, xt, xlen, t0, u0);
@@ -364,8 +430,8 @@ int flexalign_main(double **xa, double **ya,
         se_main(xt, ya, seqx, seqy, TM1_h, TM2_h, TM3_h, TM4_h, TM5_h, d0_0, TM_0,
                 d0A, d0B, d0u, d0a, d0_out, seqM_h, seqxA_h, seqyA_h, do_vec,
                 rmsd0_h, L_ali, Liden, TM_ali, rmsd_ali, n_ali_h, n_ali8_h,
-                xlen, ylen, sequence, Lnorm_ass, d0_scale, i_opt,
-                a_opt, u_opt, d_opt, mol_type, 0, invmap_h, hinge + 1);
+                xlen, ylen, sequence, Lnorm_ass, d0_scale, fixed_map ? 0 : i_opt,
+                a_opt, u_opt, d_opt, mol_type, 0, invmap_h, hinge + 1, fixed_map);
         int new_ali = 0;
         for (r = 0; r < seqM_h.size(); r++)
             new_ali += (seqM_h[r] == hinge + '1');
@@ -411,7 +477,8 @@ int flexalign_main(double **xa, double **ya,
             break;
     }
 
-    if (tu_vec.size() <= 1)
+    // Fixed correspondences are restored and scored after fragment discovery.
+    if (tu_vec.size() <= 1 || fixed_map)
     {
         DeleteArray(&xt, xlen);
         delete[] invmap;
@@ -2640,6 +2707,71 @@ enum FlexAlignMode
     FLEX_USBCAT = 2
 };
 
+// Score all original pairs with their closest transform, without re-aligning.
+void score_flexalign_fixed(double **xa, double **ya,
+    const char *seqx, const char *seqy, const int xlen, const int ylen,
+    const vector<string> &sequence, const double Lnorm_ass, const double d0_scale,
+    const int a_opt, const bool u_opt, const bool d_opt, const int mol_type,
+    FlexAlignResult &res)
+{
+    vector<int> invmap;
+    flexalign_fixed_invmap(sequence, xlen, ylen, invmap);
+    vector<int> assignment(ylen, 0);
+    vector<double> best_distance(ylen, -1.0);
+    double **xt, **rotated;
+    NewArray(&xt, xlen, 3);
+    NewArray(&rotated, xlen, 3);
+    tu2t_u(res.tu_vec[0], res.t0, res.u0);
+    do_rotation(xa, xt, xlen, res.t0, res.u0);
+    for (int h = 0; h < (int)res.tu_vec.size(); h++)
+    {
+        tu2t_u(res.tu_vec[h], res.t0, res.u0);
+        do_rotation(xa, rotated, xlen, res.t0, res.u0);
+        for (int j = 0; j < ylen; j++)
+        {
+            const int i = invmap[j];
+            if (i < 0) continue;
+            const double distance = dist(rotated[i], ya[j]);
+            if (best_distance[j] >= 0 && distance >= best_distance[j]) continue;
+            best_distance[j] = distance;
+            assignment[j] = h;
+            for (int axis = 0; axis < 3; axis++) xt[i][axis] = rotated[i][axis];
+        }
+    }
+
+    // Drop transforms which no longer explain any of the fixed pairs.
+    vector<int> new_index(res.tu_vec.size(), -1);
+    for (int j = 0; j < ylen; j++)
+        if (invmap[j] >= 0) new_index[assignment[j]] = 0;
+    vector<vector<double> > used_transforms;
+    for (int h = 0; h < (int)res.tu_vec.size(); h++)
+    {
+        if (new_index[h] < 0) continue;
+        new_index[h] = used_transforms.size();
+        used_transforms.push_back(res.tu_vec[h]);
+    }
+    res.tu_vec.swap(used_transforms);
+
+    se_main(xt, ya, seqx, seqy,
+        res.TM1, res.TM2, res.TM3, res.TM4, res.TM5, res.d0_0, res.TM_0,
+        res.d0A, res.d0B, res.d0u, res.d0a, res.d0_out,
+        res.seqM, res.seqxA, res.seqyA, res.do_vec,
+        res.rmsd0, res.L_ali, res.Liden, res.TM_ali, res.rmsd_ali,
+        res.n_ali, res.n_ali8, xlen, ylen, sequence, Lnorm_ass, d0_scale,
+        true, a_opt, u_opt, d_opt, mol_type, 0, &invmap[0]);
+    int j = -1;
+    for (int r = 0; r < (int)res.seqM.size(); r++)
+    {
+        j += res.seqyA[r] != '-';
+        if (res.seqxA[r] != '-' && res.seqyA[r] != '-')
+            res.seqM[r] = '0' + new_index[assignment[j]];
+    }
+    res.hingeNum = res.tu_vec.size();
+    tu2t_u(res.tu_vec[0], res.t0, res.u0);
+    DeleteArray(&xt, xlen);
+    DeleteArray(&rotated, xlen);
+}
+
 // Encapsulates the execution of flexalign_main and its fallback refinement logic
 void execute_flexalign_with_fallback(
     double **xa, double **ya, char *seqx, char *seqy, char *secx, char *secy,
@@ -2656,6 +2788,13 @@ void execute_flexalign_with_fallback(
         xlen, ylen, sequence, Lnorm_ass, d0_scale,
         i_opt, a_opt, u_opt, d_opt, force_fast_opt,
         mol_type, hinge_opt, ss_opt);
+
+    if (i_opt == 3)
+    {
+        score_flexalign_fixed(xa, ya, seqx, seqy, xlen, ylen, sequence,
+            Lnorm_ass, d0_scale, a_opt, u_opt, d_opt, mol_type, res);
+        return; // Cross-pair fallback searches cannot preserve a fixed map.
+    }
 
     // Fallback compensation when too few hinges are found
     if (hinge_opt && res.hingeNum <= 1 && res.n_ali8 < 0.6 * getmin(xlen, ylen))

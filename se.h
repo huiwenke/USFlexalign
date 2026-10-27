@@ -16,7 +16,8 @@ int se_main(
     const int xlen, const int ylen, const vector<string> &sequence,
     const double Lnorm_ass, const double d0_scale, const bool i_opt,
     const bool a_opt, const int u_opt, const bool d_opt, const int mol_type,
-    const int outfmt_opt, int *invmap, const int hinge=0)
+    const int outfmt_opt, int *invmap, const int hinge=0,
+    const int *fixed_invmap=NULL)
 {
     double D0_MIN;        //for d0
     double Lnorm;         //normalization length
@@ -79,7 +80,12 @@ int se_main(
 
     /* perform alignment */
     if (hinge==0) for(j=0; j<ylen; j++) invmap[j]=-1;
-    if (!i_opt) NWDP_SE(path, val, xa, ya, xlen, ylen, d0*d0, 0, invmap, hinge);
+    // A fixed map can still use the distance cutoff to find residual fragments.
+    if (fixed_invmap)
+    {
+        for (j=0; j<ylen; j++) invmap[j]=fixed_invmap[j];
+    }
+    else if (!i_opt) NWDP_SE(path, val, xa, ya, xlen, ylen, d0*d0, 0, invmap, hinge);
     else
     {
         int i1 = -1;// in C version, index starts from zero, not from one
